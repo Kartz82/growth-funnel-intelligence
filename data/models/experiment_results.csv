@@ -1,0 +1,6 @@
+Funnel_Conversion_Step,Control_Base_Volume,Control_Conversions,Control_CR_Pct,Variant_Base_Volume,Variant_Conversions,Variant_CR_Pct,Relative_Lift_Pct,Z_Score,P_Value,Statistical_Significance
+Session -> View,18072,24105,133.38,17939,23906,133.26,-0.09,,,INSIGNIFICANT
+View -> Cart,24105,5071,21.04,23906,4890,20.46,-2.77,-1.572,0.11584,INSIGNIFICANT
+Cart -> Checkout,5071,2739,54.01,4890,2600,53.17,-1.56,-0.844,0.39885,INSIGNIFICANT
+Checkout -> Purchase,2739,347,12.67,2600,331,12.73,0.49,0.068,0.94586,INSIGNIFICANT
+Macro Funnel (Session -> Purchase),18072,347,1.92,17939,331,1.85,-3.9,-0.523,0.60079,INSIGNIFICANT

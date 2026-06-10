@@ -1,0 +1,17 @@
+services:
+  growth_funnel_postgres:
+    image: postgres:15-alpine
+    container_name: growth_funnel_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: growth_funnel_db
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5435:5432"
+    volumes:
+      - growth_funnel_data:/var/lib/postgresql/data
+
+volumes:
+  growth_funnel_data:
