@@ -65,6 +65,190 @@ def stack_images(images, output_path):
     combined.save(output_path)
     print(f"✅ Saved: {output_path}")
 
+BACKGROUND = "#050A14"
+PANEL = "#0B1220"
+GRID = "rgba(148, 163, 184, 0.18)"
+TEXT = "#E5E7EB"
+MUTED = "#94A3B8"
+
+TEAL = "#14B8A6"
+GREEN = "#10B981"
+ORANGE = "#F97316"
+AMBER = "#F59E0B"
+ROSE = "#FB7185"
+RED = "#F43F5E"
+GRAY = "#64748B"
+
+def apply_portfolio_layout(fig, title, yaxis_title=None, xaxis_title=None, showlegend=False):
+    fig.update_layout(
+        title=dict(text=title, x=0.04, xanchor="left", font=dict(size=34, color=TEXT)),
+        paper_bgcolor=BACKGROUND,
+        plot_bgcolor=PANEL,
+        font=dict(color=TEXT, family="Arial, sans-serif", size=18),
+        margin=dict(l=90, r=60, t=115, b=105),
+        width=1600,
+        height=900,
+        showlegend=showlegend,
+        bargap=0.55,
+    )
+    fig.update_xaxes(
+        title=dict(text=xaxis_title, font=dict(color=MUTED, size=16)),
+        tickfont=dict(color=TEXT, size=17),
+        showgrid=False,
+        zeroline=False,
+        linecolor=GRID,
+    )
+    fig.update_yaxes(
+        title=dict(text=yaxis_title, font=dict(color=MUTED, size=16)),
+        tickfont=dict(color=TEXT, size=16),
+        gridcolor=GRID,
+        zeroline=False,
+        linecolor=GRID,
+    )
+    return fig
+
+def get_portfolio_funnel_data():
+    try:
+        return get_funnel()
+    except psycopg2.OperationalError:
+        events = pd.read_csv("data/transformed/flattened_events.csv")
+        milestones = events.groupby(["session_id", "traffic_source_medium", "device_category"]).agg(
+            stage_1_start=("event_name", lambda s: (s == "session_start").max()),
+            stage_2_view=("event_name", lambda s: (s == "view_item").max()),
+            stage_3_cart=("event_name", lambda s: (s == "add_to_cart").max()),
+            stage_4_checkout=("event_name", lambda s: (s == "begin_checkout").max()),
+            stage_5_purchase=("event_name", lambda s: (s == "purchase").max()),
+        ).reset_index()
+        df = milestones.groupby(["traffic_source_medium", "device_category"]).agg(
+            total_sessions=("session_id", "nunique"),
+            base_traffic=("stage_1_start", "sum"),
+            product_views=("stage_2_view", "sum"),
+            cart_additions=("stage_3_cart", "sum"),
+            checkout_initiations=("stage_4_checkout", "sum"),
+            realized_purchases=("stage_5_purchase", "sum"),
+        ).reset_index()
+        df = df.rename(columns={"traffic_source_medium": "acquisition_channel"})
+        df["landing_to_view_drop_pct"] = (1 - df["product_views"] / df["base_traffic"].replace(0, pd.NA)) * 100
+        df["product_to_cart_drop_pct"] = (1 - df["cart_additions"] / df["product_views"].replace(0, pd.NA)) * 100
+        df["cart_to_checkout_drop_pct"] = (1 - df["checkout_initiations"] / df["cart_additions"].replace(0, pd.NA)) * 100
+        df["checkout_to_purchase_drop_pct"] = (1 - df["realized_purchases"] / df["checkout_initiations"].replace(0, pd.NA)) * 100
+        df["macro_conversion_rate_pct"] = df["realized_purchases"] / df["base_traffic"].replace(0, pd.NA) * 100
+        return df.round({
+            "landing_to_view_drop_pct": 2,
+            "product_to_cart_drop_pct": 2,
+            "cart_to_checkout_drop_pct": 2,
+            "checkout_to_purchase_drop_pct": 2,
+            "macro_conversion_rate_pct": 3,
+        }).sort_values("total_sessions", ascending=False)
+
+def get_portfolio_attribution_data():
+    try:
+        return get_attribution()
+    except psycopg2.OperationalError:
+        events = pd.read_csv("data/transformed/flattened_events.csv")
+        events["event_timestamp"] = pd.to_datetime(events["event_timestamp"])
+        purchases = events[events["event_name"] == "purchase"][
+            ["user_pseudo_id", "session_id", "event_timestamp"]
+        ].rename(columns={"session_id": "purchase_session_id", "event_timestamp": "purchase_timestamp"})
+
+        rows = []
+        for purchase in purchases.itertuples(index=False):
+            touchpoints = events[
+                (events["user_pseudo_id"] == purchase.user_pseudo_id)
+                & (events["event_timestamp"] <= purchase.purchase_timestamp)
+            ].sort_values("event_timestamp")
+            if touchpoints.empty:
+                continue
+            rows.append({
+                "user_pseudo_id": purchase.user_pseudo_id,
+                "first_touch_medium": touchpoints.iloc[0]["traffic_source_medium"],
+                "last_touch_medium": touchpoints.iloc[-1]["traffic_source_medium"],
+            })
+
+        touches = pd.DataFrame(rows)
+        first = touches.groupby("first_touch_medium")["user_pseudo_id"].nunique()
+        last = touches.groupby("last_touch_medium")["user_pseudo_id"].nunique()
+        df = pd.concat([first, last], axis=1).fillna(0).astype(int).reset_index()
+        df.columns = ["marketing_channel", "first_touch_conversions", "last_touch_conversions"]
+        df["attribution_delta"] = df["last_touch_conversions"] - df["first_touch_conversions"]
+        return df.sort_values("last_touch_conversions", ascending=False)
+
+def save_portfolio_charts():
+    os.makedirs("reports", exist_ok=True)
+
+    df = get_portfolio_funnel_data()
+    drop_cols = ["landing_to_view_drop_pct","product_to_cart_drop_pct",
+                 "cart_to_checkout_drop_pct","checkout_to_purchase_drop_pct"]
+    drop_labels = ["Landing to View","View to Cart","Cart to Checkout","Checkout to Purchase"]
+    avg_drops = df[drop_cols].mean()
+    largest_drop = avg_drops.max()
+    drop_colors = [RED if v == largest_drop else AMBER for v in avg_drops.values]
+
+    fig_drop = go.Figure(go.Bar(
+        x=drop_labels,
+        y=avg_drops.values,
+        marker=dict(color=drop_colors, line=dict(color="rgba(255,255,255,0.10)", width=1)),
+        text=[f"{v:.1f}%" for v in avg_drops.values],
+        textposition="outside",
+        width=0.42,
+        cliponaxis=False,
+    ))
+    apply_portfolio_layout(fig_drop, "Funnel Drop-off by Stage", yaxis_title="Drop-off %")
+    fig_drop.update_yaxes(range=[0, max(110, largest_drop + 12)])
+    pio.write_image(fig_drop, "reports/funnel_dropoff.png", width=1600, height=900, scale=2)
+    print("✅ Saved: reports/funnel_dropoff.png")
+
+    df3 = get_portfolio_attribution_data()
+    channel_labels = df3["marketing_channel"].astype(str).str.replace("_", " ", regex=False).str.title()
+    delta_colors = [TEAL if v >= 0 else ORANGE for v in df3["attribution_delta"]]
+
+    fig_delta = go.Figure(go.Bar(
+        x=channel_labels,
+        y=df3["attribution_delta"],
+        marker=dict(color=delta_colors, line=dict(color="rgba(255,255,255,0.10)", width=1)),
+        text=[f"{int(v):+d}" for v in df3["attribution_delta"]],
+        textposition="outside",
+        width=0.42,
+        cliponaxis=False,
+    ))
+    fig_delta.add_hline(y=0, line_color=GRAY, line_width=2)
+    apply_portfolio_layout(fig_delta, "Channel Attribution Shift", yaxis_title="Last-touch minus first-touch conversions")
+    fig_delta.update_xaxes(tickangle=-20)
+    pio.write_image(fig_delta, "reports/channel_attribution.png", width=1600, height=900, scale=2)
+    print("✅ Saved: reports/channel_attribution.png")
+
+    df5 = get_experiment()
+    lift_colors = [GREEN if v >= 0 else ROSE for v in df5["Relative_Lift_Pct"]]
+
+    fig_lift = go.Figure(go.Bar(
+        x=df5["Funnel_Conversion_Step"],
+        y=df5["Relative_Lift_Pct"],
+        marker=dict(color=lift_colors, line=dict(color="rgba(255,255,255,0.10)", width=1)),
+        text=[f"{v:+.2f}%" for v in df5["Relative_Lift_Pct"]],
+        textposition="outside",
+        width=0.42,
+        cliponaxis=False,
+    ))
+    fig_lift.add_hline(y=0, line_color=GRAY, line_width=2)
+    apply_portfolio_layout(fig_lift, "Experiment Lift by Funnel Stage", yaxis_title="Relative lift %")
+    fig_lift.update_layout(
+        annotations=[
+            dict(
+                text="No statistically significant uplift detected",
+                x=0.04,
+                y=1.055,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                xanchor="left",
+                font=dict(color=MUTED, size=18),
+            )
+        ]
+    )
+    fig_lift.update_xaxes(tickangle=-12)
+    pio.write_image(fig_lift, "reports/experiment_results.png", width=1600, height=900, scale=2)
+    print("✅ Saved: reports/experiment_results.png")
+
 def save_all_reports():
     os.makedirs("reports", exist_ok=True)
 
